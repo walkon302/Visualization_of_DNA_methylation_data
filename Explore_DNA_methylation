@@ -1,0 +1,191 @@
+---
+title: "MethyQ"
+author: "Chun-Han Lin"
+date: "1/27/2017"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r global, include = FALSE}
+suppressMessages(library(ggplot2))
+suppressMessages(library(reshape2))
+suppressMessages(library(grid))
+suppressMessages(library(gridExtra))
+suppressMessages(library(shiny))
+
+load('geneExon.RData')
+load('MethyData.RData')
+
+```
+
+```{r functions, include = FALSE}
+## get the data based on gene name and the extending range
+gene_decide <- function(kd) {
+  MethyData$UCSC_REFGENE_NAME <- as.character(MethyData$UCSC_REFGENE_NAME)
+  single <- strsplit(MethyData$UCSC_REFGENE_NAME, ';')
+  singlename <- do.call(rbind.data.frame, lapply(single, function(y) unlist(y[1])))
+  colnames(singlename) <- 'UCSC_REFGENE_NAME_SINGLE'
+  data2 <- cbind(MethyData, singlename)
+  gene <- subset(data2, grepl(paste("^", kd, "$", sep = ''), data2$UCSC_REFGENE_NAME_SINGLE))
+  return(gene)
+}
+
+loci_decide <- function(start, end) {
+  loci <- data.frame(NULL)
+  methy <- as.data.frame(MethyData[which(MethyData$MAPINFO > start & MethyData$MAPINFO < end),])
+  return(methy)
+}
+
+gene_extend_decide <- function(kd, headloci, tailloci) {
+  methy_gene <- gene_decide(kd)
+  minMAP <- min(methy_gene$MAPINFO) - headloci
+  maxMAP <- max(methy_gene$MAPINFO) + tailloci
+  methy_loci <- loci_decide(minMAP, maxMAP)
+  methy_loci <- merge(methy_loci, methy_gene[c('TargetID', 'UCSC_REFGENE_NAME_SINGLE')], 
+                      by.x = 'TargetID', by.y = 'TargetID', all = TRUE)
+  return(methy_loci)
+}
+
+## get methy data within range of loci
+
+
+## melt data based on TargetID and MAPINFO
+datamp <- function(data) {
+  data <- melt(data, id = c('TargetID', 'MAPINFO'))
+  data$TargetID <- as.character(data$TargetID)
+  data$MAPINFO <- as.numeric(data$MAPINFO)
+  return(data)
+}
+
+## filter out AVG of methylation data from melted data
+finddata <- function(data, kd) {
+  subdata <- subset(data, grepl(kd, data$variable))
+  subdata$value <- as.numeric(subdata$value)
+  subdata$variable <- gsub('.AVG_Beta', '', subdata$variable)
+  subdata$variable <- gsub('X90P', '90P', subdata$variable)
+  return(subdata)
+}
+
+## plot the transcripts
+exonplot <- function(data, headloci, tailloci) {
+  p <- ggplot(data) + geom_segment(size = 5, color = 'red',
+                                   aes(x=start, xend=stop, y=trans, yend=trans)) + 
+    xlim(min(data$start) - headloci, max(data$stop) + tailloci) +
+    theme_bw() + labs(y = 'Transcript', x = 'Genome Build 37') + 
+    facet_grid(trans~., switch = 'y', scale = 'free', space = 'free') +
+    theme(strip.text.y = element_text(angle = 180), axis.ticks.y = element_blank(), axis.text.y = element_blank(),
+          axis.ticks.x = element_blank(), axis.text.x = element_blank(), 
+          strip.background = element_blank())
+  return(p)
+}
+
+## plot the methylations
+methylineplot <- function(data) {
+  data$variable <- factor(data$variable, 
+                          levels = c('young.LEP', 'young.MEP', 
+                                     'old.LEP', 'old.MEP', '90P.MEP', 'YY', 'YO', 'OO')) #yLEP yMEP oLEP oMEP 90P yy yo oo
+  p <- ggplot(data, aes(MAPINFO, value)) +
+    geom_segment(color = 'red', aes(x = MAPINFO, xend = MAPINFO, y = 0, yend = value)) + 
+    facet_grid(variable~., switch = 'y', scale = 'free', space = 'free') + theme_bw() + 
+    theme(strip.text.y = element_text(angle = 180), axis.ticks.y = element_blank(), axis.text.y = element_blank(),
+          axis.ticks.x = element_blank(), axis.text.x = element_blank(), 
+          strip.background = element_blank()) + labs(x = 'Methylation site', y = 'Sample') +
+    xlim(min(data$MAPINFO), max(data$MAPINFO))
+  return(p)
+}
+
+## align two plots
+alignGeneMethylPlots2 <- function(plots){
+  pdf(file=NULL, width=10.5)
+  plot1g <- ggplot_gtable(ggplot_build(plots[[1]]))
+  plot2g <- ggplot_gtable(ggplot_build(plots[[2]]))
+  foo <- dev.off()
+  plot1g$widths <- plot2g$widths
+  return(list(plot1g, plot2g))
+}
+
+## generate final plots
+testpt <- function(genename) {
+  meDat <- finddata(datamp(gene_extend_decide(genename, headloci, tailloci)), 'AVG')
+  plot2 <- methylineplot(meDat)
+  return(plot2)
+}
+
+plotgene_extend2 <- function(genename, headloci, tailloci) {
+  exDat <- geneExons[[genename]]
+  meDat <- finddata(datamp(gene_extend_decide(genename, headloci, tailloci)), 'AVG')
+  plot1 <- exonplot(exDat, headloci, tailloci)
+  plot2 <- methylineplot(meDat)
+  plots <- list(plot1, plot2)
+  aplots <- alignGeneMethylPlots2(plots)
+  finalplot <- grid.arrange(aplots[[1]], aplots[[2]],
+                            heights = c(length(unique(exDat$trans)) * 0.03, 0.5))
+  return(finalplot)
+}
+
+```
+
+Methylations
+===
+Inputs {.sidebar}
+---
+```{r single measurement, echo = FALSE}
+
+inputPanel(
+  textInput('gene', 'Gene_Name'),
+  numericInput('start', 'Before', value = 0),
+  numericInput('stop', 'After', value = 0)
+)
+
+actionButton('print', 'Plot',
+    style="color: #fff; background-color: #000000; border-color: #000000")
+```
+<p></p>           
+```{r, echo = FALSE}
+downloadLink('downloadData', 'Save Image', style = "color: #000000")
+
+```
+
+row
+---
+### HumanMethylation450
+```{r, echo = FALSE}
+
+pgene <- eventReactive(input$print, {
+  input$gene
+})
+
+pstart <- eventReactive(input$print, {
+  input$start
+})
+
+pstop <- eventReactive(input$print, {
+  input$stop
+})
+
+renderPlot({
+  validate(need(pgene() != '', 'Please type in gene name, e.g. KRT14'))
+  p <- plotgene_extend2(pgene(), pstart(), pstop())
+  p})
+
+plotInput <- reactive({
+  p <- plotgene_extend2(pgene(), pstart(), pstop())
+  p
+})
+
+output$downloadData <- downloadHandler(
+  filename = function() {paste(input$gene, input$start, input$stop, '.pdf', sep='_')},
+  content = function(file) {
+    ggsave(file, plot = plotInput(), device = "pdf")
+  }
+)
+
+```
+
